@@ -99,6 +99,7 @@ class TokenIDLogProbMixin(BaseModel):
     policy_epoch: list[list[tuple[int, int]]]
     kv_cache_epoch: list[list[tuple[int, int]]]
     num_evictions: list[int]
+    routing_indices: list | None = None  # [G, L, top_k] int, present when --moe-enable-routing-replay
 
 class TokenIDLogProbTypedDictMixin(TypedDict):
     prompt_token_ids: List[int]
@@ -312,6 +313,7 @@ class NeMoGymChatCompletionMessageForTraining(NeMoGymChatCompletionMessage, Toke
 
 class NeMoGymChoice(Choice):
     message: Union[NeMoGymChatCompletionMessage, NeMoGymChatCompletionMessageForTraining]
+    moe_topk_indices: list | None = None  # routing indices from --moe-enable-routing-replay
 
 
 class NeMoGymChatCompletion(ChatCompletion):

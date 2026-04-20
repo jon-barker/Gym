@@ -636,6 +636,7 @@ class VLLMConverter(BaseModel):
                 policy_epoch=raw_message.get("policy_epoch", [[(0, 0)]]),
                 kv_cache_epoch=raw_message.get("kv_cache_epoch", [[(0, 0)]]),
                 num_evictions=raw_message.get("num_evictions", [0]),
+                routing_indices=choice.moe_topk_indices,
             )
 
         return response_output
