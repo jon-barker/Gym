@@ -96,6 +96,10 @@ class TokenIDLogProbMixin(BaseModel):
     prompt_token_ids: List[int]
     generation_token_ids: List[int]
     generation_log_probs: List[float]
+    generation_logit_means: Optional[List[float]] = None
+    generation_logit_stds: Optional[List[float]] = None
+    generation_top_logprobs: Optional[List[List[dict]]] = None
+    routing_dump_id: Optional[str] = None
     policy_epoch: list[list[tuple[int, int]]]
     kv_cache_epoch: list[list[tuple[int, int]]]
     num_evictions: list[int]
@@ -104,6 +108,10 @@ class TokenIDLogProbTypedDictMixin(TypedDict):
     prompt_token_ids: List[int]
     generation_token_ids: List[int]
     generation_log_probs: List[float]
+    generation_logit_means: Optional[List[float]]
+    generation_logit_stds: Optional[List[float]]
+    generation_top_logprobs: Optional[List[List[dict]]]
+    routing_dump_id: Optional[str]
     policy_epoch: list[list[tuple[int, int]]]
     kv_cache_epoch: list[list[tuple[int, int]]]
     num_evictions: list[int]
@@ -271,6 +279,7 @@ class NeMoGymResponseCreateParamsNonStreaming(BaseModel):
     tools: List[ToolParam] = Field(default_factory=list)
     top_logprobs: Optional[int] = None
     top_p: Optional[float] = None
+    return_logit_stats: Optional[bool] = None
     truncation: Optional[Literal["auto", "disabled"]] = None
     user: Optional[str] = None
     stream: Optional[Literal[False]] = None
@@ -420,6 +429,7 @@ class NeMoGymChatCompletionCreateParamsNonStreaming(BaseModel):
     tools: Optional[List[NeMoGymChatCompletionToolParam]] = None
     top_logprobs: Optional[int] = None
     top_p: Optional[float] = None
+    return_logit_stats: Optional[bool] = None
     user: Optional[str] = None
     web_search_options: Optional[WebSearchOptions] = None
     stream: Optional[Literal[False]] = None

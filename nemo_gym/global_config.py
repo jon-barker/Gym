@@ -24,7 +24,11 @@ import rich
 from omegaconf import DictConfig, OmegaConf, open_dict
 from openai import __version__ as openai_version
 from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError
-from ray import __version__ as ray_version
+
+try:
+    from ray import __version__ as ray_version
+except ImportError:
+    ray_version = None
 
 from nemo_gym import PARENT_DIR
 from nemo_gym.config_types import (
@@ -264,7 +268,7 @@ class GlobalConfigDictParser(BaseModel):
             global_config_dict[HEAD_SERVER_DEPS_KEY_NAME] = [
                 # The ray version is very sensitive. The children ray versions must exactly match those of the parent ray.
                 # The ray extra [default] should also exactly match the extra in the top-level Gym pyproject.toml.
-                f"ray[default]=={ray_version}",
+                f"ray[default]=={ray_version}" if ray_version is not None else "ray[default]",
                 # OpenAI version is also sensitive since it changes so often and may introduce subtle incompatibilities.
                 f"openai=={openai_version}",
             ]

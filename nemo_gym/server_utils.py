@@ -29,7 +29,6 @@ from traceback import print_exc
 from typing import List, Literal, Optional, Tuple, Type, Union, Unpack
 from uuid import uuid4
 
-import ray
 import requests
 import uvicorn
 import yappi
@@ -65,6 +64,11 @@ from nemo_gym.global_config import (
     get_first_server_config_dict,
     get_global_config_dict,
 )
+
+try:
+    import ray
+except ImportError:
+    ray = None
 
 
 _GLOBAL_AIOHTTP_CLIENT: Union[None, ClientSession] = None
@@ -349,6 +353,9 @@ def initialize_ray() -> None:
     This avoids the need to start a new Ray cluster in each child process.
     Note: This function will modify the global config dict - update `ray_head_node_address`
     """
+
+    if ray is None:
+        raise ImportError("Ray is required to initialize a NeMo Gym Ray cluster.")
 
     if ray.is_initialized():
         print("Ray already initialized")

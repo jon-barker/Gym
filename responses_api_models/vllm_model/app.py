@@ -168,6 +168,7 @@ class VLLMModel(SimpleResponsesAPIModel):
         if self.config.return_token_id_information:
             create_params |= dict(
                 logprobs=True,
+                top_logprobs=create_params.get("top_logprobs"),
                 # Typically passed via OpenAI client extra_body.
                 return_tokens_as_token_ids=True,
                 # TODO add this when NeMo RL upgrades to vLLM 0.10.2 support for prompt token ids
@@ -270,6 +271,15 @@ class VLLMModel(SimpleResponsesAPIModel):
             "prompt_token_ids" not in choice_dict["message"]):
             log_probs = choice_dict["logprobs"]["content"]
             generation_log_probs = [log_prob["logprob"] for log_prob in log_probs]
+            generation_top_logprobs = [
+                log_prob.get("top_logprobs") for log_prob in log_probs
+            ]
+            if not any(generation_top_logprobs):
+                native_top_logprobs = choice_dict["message"].get(
+                    "generated_top_n_logprobs"
+                ) or choice_dict.get("generated_top_n_logprobs")
+                if native_top_logprobs:
+                    generation_top_logprobs = native_top_logprobs
 
             """
             START TODO remove this when NeMo RL upgrades to vLLM 0.10.2 support for prompt token ids
@@ -299,6 +309,10 @@ class VLLMModel(SimpleResponsesAPIModel):
                     # generation_token_ids=choice_dict["token_ids"],
                     generation_token_ids=generation_token_ids,
                     generation_log_probs=generation_log_probs,
+                    generation_logit_means=choice_dict["message"].get("generation_logit_means"),
+                    generation_logit_stds=choice_dict["message"].get("generation_logit_stds"),
+                    generation_top_logprobs=generation_top_logprobs,
+                    routing_dump_id=choice_dict.get("routing_dump_id") or choice_dict["message"].get("routing_dump_id"),
                     policy_epoch=[[(0, 0)]],
                     kv_cache_epoch=[[(0, 0)]],
                     num_evictions=[0],
@@ -426,6 +440,10 @@ class VLLMConverter(BaseModel):
                     prompt_token_ids=m["prompt_token_ids"],
                     generation_token_ids=m["generation_token_ids"],
                     generation_log_probs=m["generation_log_probs"],
+                    generation_logit_means=m.get("generation_logit_means"),
+                    generation_logit_stds=m.get("generation_logit_stds"),
+                    generation_top_logprobs=m.get("generation_top_logprobs"),
+                    routing_dump_id=m.get("routing_dump_id"),
                     policy_epoch=m["policy_epoch"],
                     kv_cache_epoch=m["kv_cache_epoch"],
                     num_evictions=m["num_evictions"],
@@ -633,6 +651,10 @@ class VLLMConverter(BaseModel):
                 prompt_token_ids=raw_message["prompt_token_ids"],
                 generation_token_ids=raw_message["generation_token_ids"],
                 generation_log_probs=raw_message["generation_log_probs"],
+                generation_logit_means=raw_message.get("generation_logit_means"),
+                generation_logit_stds=raw_message.get("generation_logit_stds"),
+                generation_top_logprobs=raw_message.get("generation_top_logprobs"),
+                routing_dump_id=raw_message.get("routing_dump_id"),
                 policy_epoch=raw_message.get("policy_epoch", [[(0, 0)]]),
                 kv_cache_epoch=raw_message.get("kv_cache_epoch", [[(0, 0)]]),
                 num_evictions=raw_message.get("num_evictions", [0]),
