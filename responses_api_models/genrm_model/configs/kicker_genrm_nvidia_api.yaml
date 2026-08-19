@@ -1,0 +1,19 @@
+# External GenRM via NVIDIA integrate API (OpenAI-compatible chat/completions).
+# Selected when JUDGE_BACKEND=nvidia_api (see judge_backend.sh). Self-hosted
+# path remains kicker_genrm_remote.yaml + endpoint files — do not delete that.
+#
+# No endpoint_file: URL is fixed; rebind/rotation is for Slurm-hosted judges.
+# api_key must come from env (never commit the key). launch_nemogym_server.sh /
+# judge_backend.sh load ~/.config/nvidia/api_key when NVIDIA_API_KEY is unset.
+genrm_model:
+  responses_api_models:
+    vllm_model:
+      entrypoint: app.py
+      base_url: ${oc.env:NVIDIA_NIM_BASE_URL,https://integrate.api.nvidia.com/v1}
+      api_key: ${oc.env:NVIDIA_API_KEY}
+      model: ${oc.env:GENRM_NIM_MODEL,private/ultra-genrm/nvidia/nemotron3-ultra-genrm}
+      return_token_id_information: false
+      uses_reasoning_parser: true
+      uses_interleaved_reasoning: false
+      chat_template_kwargs: null
+      extra_body: null

@@ -1,0 +1,44 @@
+# External nl2bash + safety judges via NVIDIA integrate API.
+# Pair with kicker_genrm_nvidia_api.yaml when JUDGE_BACKEND=nvidia_api.
+# Self-hosted: kicker_d1_judges_remote.yaml (untouched).
+#
+# policy_model_reasoning_off is identical to the self-hosted remote yaml — still
+# required by genrm_simple_agent_reasoning_off.
+nl2bash_judge_model:
+  responses_api_models:
+    vllm_model:
+      entrypoint: app.py
+      base_url: ${oc.env:NVIDIA_NIM_BASE_URL,https://integrate.api.nvidia.com/v1}
+      api_key: ${oc.env:NVIDIA_API_KEY}
+      model: ${oc.env:NL2BASH_NIM_MODEL,private/nemotron/qwen/qwen3-235b-a22b-instruct-2507}
+      return_token_id_information: false
+      uses_reasoning_parser: false
+      uses_interleaved_reasoning: false
+      chat_template_kwargs: null
+      extra_body: null
+
+safety_judge_model:
+  responses_api_models:
+    vllm_model:
+      entrypoint: app.py
+      base_url: ${oc.env:NVIDIA_NIM_BASE_URL,https://integrate.api.nvidia.com/v1}
+      api_key: ${oc.env:NVIDIA_API_KEY}
+      model: ${oc.env:SAFETY_NIM_MODEL,private/nemotron/nvidia/nemotron-content-safety-reasoning-4b}
+      return_token_id_information: false
+      uses_reasoning_parser: false
+      uses_interleaved_reasoning: false
+      chat_template_kwargs: null
+      extra_body: null
+
+policy_model_reasoning_off:
+  responses_api_models:
+    vllm_model:
+      entrypoint: app.py
+      base_url: ${policy_base_url}
+      api_key: ${policy_api_key}
+      model: ${policy_model_name}
+      return_token_id_information: true
+      uses_reasoning_parser: true
+      chat_template_kwargs:
+        enable_thinking: false
+      sequential_reasoning_allowed: false
