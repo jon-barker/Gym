@@ -7,7 +7,7 @@ code_gen:
       verified_url: https://wandb.ai/nvidia/bxyu-nemo-gym-rl-integration-20250926/runs/54uzarwq
       description: Model must submit the right code to solve a problem
       value: Improve competitive coding capabilities
-      num_processes: 8
+      num_processes: 2048
       unit_test_timeout_secs: 10
       debug: false
       # Don't punish rollouts that ran out of tokens mid-<think> (the deepseek-r1
