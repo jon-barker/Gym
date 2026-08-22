@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import time
 from contextlib import nullcontext
 from typing import Any, Optional
 
@@ -43,6 +44,7 @@ from nemo_gym.openai_utils import (
     NeMoGymResponseCreateParamsNonStreaming,
 )
 from nemo_gym.server_utils import get_response_json
+from nemo_gym.trace_verify import gym_run_log
 
 
 class LLMJudgeResourcesServerConfig(BaseResourcesServerConfig):
@@ -138,6 +140,9 @@ class JudgeEvaluation(BaseModel):
 class LLMJudgeVerifyResponse(BaseVerifyResponse):
     expected_answer: str
     judge_evaluations: list[JudgeEvaluation]
+    judge_elapsed: Optional[float] = None
+    n_judge_calls: int = 0
+    verdict: Optional[str] = None
 
 
 def _extract_last_assistant_text(body: BaseVerifyRequest, extract_regex: Optional[str]) -> str:
@@ -322,8 +327,16 @@ class LLMJudgeResourcesServer(SimpleResourcesServer):
         """Create verification response with reward and evaluations."""
         payload = body.model_dump()
         payload.pop("expected_answer", None)
+        last_verdict = None
+        if evaluations:
+            last_verdict = getattr(evaluations[-1], "verdict_label", None)
         return LLMJudgeVerifyResponse(
-            **payload, reward=reward, expected_answer=expected, judge_evaluations=evaluations
+            **payload,
+            reward=reward,
+            expected_answer=expected,
+            judge_evaluations=evaluations,
+            n_judge_calls=len(evaluations),
+            verdict=last_verdict,
         )
 
     async def _handle_first_pass_failed(
@@ -417,6 +430,7 @@ class LLMJudgeResourcesServer(SimpleResourcesServer):
         # - If extract_regex is None (long answer) → full generation
         generated = _extract_last_assistant_text(body, extract_regex)
 
+        judge_started = time.monotonic()
         # Step 4: Run first judge evaluation
         first_equal, first_eval = await self._generate_judge_evaluation(
             question=question, expected_answer=expected, generated_answer=generated
@@ -424,9 +438,22 @@ class LLMJudgeResourcesServer(SimpleResourcesServer):
 
         # Step 5 & 6: Handle result based on first evaluation
         if not first_equal:
-            return await self._handle_first_pass_failed(body, expected, question, first_eval)
+            result = await self._handle_first_pass_failed(body, expected, question, first_eval)
         else:
-            return await self._handle_first_pass_succeeded(body, expected, question, generated, first_eval)
+            result = await self._handle_first_pass_succeeded(body, expected, question, generated, first_eval)
+        judge_elapsed = time.monotonic() - judge_started
+        result.judge_elapsed = judge_elapsed
+        gym_run_log(
+            "DETAIL",
+            id=getattr(body, "gym_run_id", None),
+            env=self.config.name,
+            phase="verify",
+            reward=result.reward,
+            judge_elapsed=judge_elapsed,
+            n_judge_calls=result.n_judge_calls,
+            verdict=result.verdict,
+        )
+        return result
 
     async def _generate_judge_evaluation(
         self, *, question: str, expected_answer: str, generated_answer: str

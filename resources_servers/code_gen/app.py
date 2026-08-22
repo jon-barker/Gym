@@ -35,6 +35,7 @@ from nemo_gym.reward_profile import (
     compute_subset_metrics,
     highest_k_metrics,
 )
+from nemo_gym.trace_verify import gym_run_log
 
 
 # ----------------------------
@@ -75,6 +76,11 @@ class CompCodingVerifyResponse(BaseVerifyResponse):
     unit_tests_time_taken: Optional[float] = None
     reasoning_format_violation_rate: float = 0.0
     difficulty: Optional[str] = None
+    n_tests: Optional[int] = None
+    tests_completed: Optional[int] = None
+    global_timeout: bool = False
+    error_code: Optional[int] = None
+    error_message: Optional[str] = None
 
 
 # ----------------------------
@@ -155,9 +161,12 @@ class CompCodingResourcesServer(SimpleResourcesServer):
                 **body.model_dump(),
                 reward=0.0,
                 difficulty=difficulty,
+                n_tests=None,
+                tests_completed=0,
             )
 
         tests = UnitTests.model_validate(body.verifier_metadata["unit_tests"])
+        n_tests = len(tests.inputs)
 
         # 3) extract code (code fence or raw)
         code = extract_code(model_out, LMStyle.OpenAIChat)
@@ -167,6 +176,8 @@ class CompCodingResourcesServer(SimpleResourcesServer):
                 reward=0.0,
                 extracted_model_output=model_out,
                 difficulty=difficulty,
+                n_tests=n_tests,
+                tests_completed=0,
             )
 
         # 4) run (no sandbox)
@@ -212,14 +223,35 @@ class CompCodingResourcesServer(SimpleResourcesServer):
             unit_tests_time_taken = time() - start_time
 
         has_violation = self._has_reasoning_format_violation(body.response)
-
+        error_code = None
+        error_message = None
+        if isinstance(metadata, dict):
+            error_code = metadata.get("error_code")
+            error_message = metadata.get("error_message")
+        global_timeout = metadata is None and bool(result) and all(r == -1 for r in result)
+        tests_completed = len(result) if result is not None else 0
+        reward = (
+            self.config.reasoning_format_penalty
+            if has_violation
+            else (1.0 if result and all(r == True for r in result) else 0.0)
+        )
+        gym_run_log(
+            "DETAIL",
+            id=getattr(body, "gym_run_id", None),
+            env=self.config.name,
+            phase="verify",
+            n_tests=n_tests,
+            tests_completed=tests_completed,
+            unit_tests_s=unit_tests_time_taken,
+            global_timeout=global_timeout,
+            error_code=error_code,
+            error_message=error_message,
+            extracted=bool(code),
+            reward=reward,
+        )
         return CompCodingVerifyResponse(
             **body.model_dump(),
-            reward=(
-                self.config.reasoning_format_penalty
-                if has_violation
-                else (1.0 if all(r == True for r in result) else 0.0)
-            ),
+            reward=reward,
             extracted_model_output=model_out,
             extracted_model_code=code,
             result=result,
@@ -227,6 +259,11 @@ class CompCodingResourcesServer(SimpleResourcesServer):
             unit_tests_time_taken=unit_tests_time_taken,
             reasoning_format_violation_rate=1.0 if has_violation else 0.0,
             difficulty=difficulty,
+            n_tests=n_tests,
+            tests_completed=tests_completed,
+            global_timeout=global_timeout,
+            error_code=error_code,
+            error_message=error_message,
         )
 
 

@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import FastAPI
@@ -47,6 +48,7 @@ from nemo_gym.openai_utils import (
     NeMoGymEasyInputMessage,
     NeMoGymResponseCreateParamsNonStreaming,
 )
+from nemo_gym.trace_verify import gym_run_log
 from resources_servers.genrm_compare.utils import (
     GenRMOutputParseError,
     aggregate_scores,
@@ -101,7 +103,16 @@ class GenRMCompareConfig(BaseResourcesServerConfig):
     # stalls, 2026-07-17: engine drained to one orphaned request while 7
     # cohort peers hung). On timeout the first waiter claims the partial
     # cohort and scores it (default score if fewer than 2 responses).
+    # This is the FILL wait (siblings arriving at /verify), not GenRM HTTP.
+    # Observed fill+score p90 ~16 min, max ~29 min (small_v2, 2026-08-21);
+    # 20 min would clip healthy long-decode siblings. Keep >= ~40 min.
     cohort_timeout_s: float = 1800.0
+    # Bound the GenRM compare itself. Circular 16-way gather against the NIM
+    # has no HTTP total timeout (aiohttp ClientTimeout() defaults to infinite),
+    # so a wedged NVCF call previously parked the scorer forever; waiters then
+    # hit cohort_timeout_s, found the buffer already claimed, and awaited the
+    # future with no timeout (small_v2: 32 /verify stuck from ~14:28).
+    genrm_score_timeout_s: float = 1200.0
 
     # Comparison strategy
     comparison_strategy: str = "circular"  # "all_pairs" or "circular"
@@ -150,6 +161,14 @@ class GenRMCompareVerifyRequest(BaseVerifyRequest):
     """Verify request with optional principle for cohort-based GenRM comparison."""
 
     principle: Optional[str] = None  # Principle for principle-based GenRM; forwarded by agent when provided
+
+
+class GenRMCompareVerifyResponse(BaseVerifyResponse):
+    cohort_wait_s: Optional[float] = None
+    score_elapsed_s: Optional[float] = None
+    n_cohort: Optional[int] = None
+    cohort_timed_out: bool = False
+    scored_here: bool = False
 
 
 class GenRMCompareRequest(BaseModel):
@@ -206,7 +225,7 @@ class GenRMCompareResourcesServer(SimpleResourcesServer):
         cfg = self.config
         principle = body.principle
         if cfg.num_rollouts_per_prompt <= 1:
-            return BaseVerifyResponse(
+            return GenRMCompareVerifyResponse(
                 responses_create_params=body.responses_create_params,
                 response=body.response,
                 reward=cfg.default_score,
@@ -219,8 +238,13 @@ class GenRMCompareResourcesServer(SimpleResourcesServer):
         )
         future: asyncio.Future[float] = asyncio.get_running_loop().create_future()
 
+        verify_started = time.monotonic()
         cohort_ready = False
         cohort_buf = None
+        score_elapsed = None
+        timed_out = False
+        n_cohort = None
+        scored_here = False
         async with _cohort_lock:
             if prompt_key not in _cohort_buffers:
                 _cohort_buffers[prompt_key] = []
@@ -233,11 +257,16 @@ class GenRMCompareResourcesServer(SimpleResourcesServer):
                 del _cohort_buffers[prompt_key]
 
         if cohort_ready:
-            await self._score_cohort(cohort_buf, principle)
+            n_cohort = len(cohort_buf)
+            scored_here = True
+            score_started = time.monotonic()
+            await self._score_cohort_bounded(cohort_buf, principle)
+            score_elapsed = time.monotonic() - score_started
 
         try:
             reward = await asyncio.wait_for(asyncio.shield(future), timeout=cfg.cohort_timeout_s)
         except asyncio.TimeoutError:
+            timed_out = True
             # Cohort never filled (a peer sub-request died upstream). Claim
             # whatever arrived and score it so no waiter hangs the wave.
             async with _cohort_lock:
@@ -247,13 +276,65 @@ class GenRMCompareResourcesServer(SimpleResourcesServer):
                     "[GenRM] Cohort for prompt_key=%s timed out with %d/%d rollouts; scoring partial cohort.",
                     prompt_key, len(stale_buf), cfg.num_rollouts_per_prompt,
                 )
-                await self._score_cohort(stale_buf, principle)
-            reward = await future
-        return BaseVerifyResponse(
+                n_cohort = len(stale_buf)
+                scored_here = True
+                score_started = time.monotonic()
+                await self._score_cohort_bounded(stale_buf, principle)
+                score_elapsed = time.monotonic() - score_started
+            # Scorer already claimed the buffer and may still be inside a wedged
+            # NIM compare. Do not await that future unbounded.
+            if not future.done():
+                logger.warning(
+                    "[GenRM] Waiter timed out while scorer still in flight; "
+                    "returning default_score instead of waiting forever."
+                )
+                future.set_result(cfg.default_score)
+            reward = future.result()
+        cohort_wait_s = time.monotonic() - verify_started
+        gym_run_log(
+            "DETAIL",
+            id=getattr(body, "gym_run_id", None),
+            env=cfg.name,
+            phase="verify",
+            reward=reward,
+            cohort_wait_s=cohort_wait_s,
+            score_elapsed_s=score_elapsed,
+            n_cohort=n_cohort,
+            cohort_timed_out=timed_out,
+            scored_here=scored_here,
+        )
+        return GenRMCompareVerifyResponse(
             responses_create_params=body.responses_create_params,
             response=body.response,
             reward=reward,
+            cohort_wait_s=cohort_wait_s,
+            score_elapsed_s=score_elapsed,
+            n_cohort=n_cohort,
+            cohort_timed_out=timed_out,
+            scored_here=scored_here,
         )
+
+    async def _score_cohort_bounded(self, cohort_buf, principle) -> None:
+        """Run ``_score_cohort`` with ``genrm_score_timeout_s``.
+
+        On timeout, cancel the compare and resolve every waiter with
+        ``default_score`` so /verify cannot hang behind a wedged NIM call.
+        """
+        cfg = self.config
+        try:
+            await asyncio.wait_for(
+                self._score_cohort(cohort_buf, principle),
+                timeout=cfg.genrm_score_timeout_s,
+            )
+        except asyncio.TimeoutError:
+            logger.error(
+                "[GenRM] Compare timed out after %.0fs for %d rollouts; defaulting cohort rewards.",
+                cfg.genrm_score_timeout_s,
+                len(cohort_buf),
+            )
+            for _, fut in cohort_buf:
+                if not fut.done():
+                    fut.set_result(cfg.default_score)
 
     async def _score_cohort(self, cohort_buf, principle) -> None:
         """Compare a (possibly partial) cohort and resolve every waiter future.

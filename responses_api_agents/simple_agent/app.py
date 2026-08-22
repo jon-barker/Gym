@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import json
+import time
 from typing import List, Optional
 
 from fastapi import Request, Response
@@ -40,6 +41,12 @@ from nemo_gym.openai_utils import (
     NeMoGymResponseOutputMessage,
 )
 from nemo_gym.server_utils import get_response_json, raise_for_status
+from nemo_gym.trace_verify import (
+    TRACE_VERIFY,
+    gym_run_log,
+    next_run_id,
+    verify_trace_fields,
+)
 
 
 class SimpleAgentConfig(BaseResponsesAPIAgentConfig):
@@ -180,6 +187,31 @@ class SimpleAgent(SimpleResponsesAPIAgent):
         return model_response
 
     async def run(self, request: Request, body: SimpleAgentRunRequest) -> SimpleAgentVerifyResponse:
+        env = getattr(self.config, "name", None) or self.config.resources_server.name
+        run_id = next_run_id() if TRACE_VERIFY else None
+        started = time.monotonic()
+        gym_run_log("BEGIN", id=run_id, env=env)
+        try:
+            return await self._run_impl(request, body, env=env, run_id=run_id, started=started)
+        except BaseException as exc:
+            gym_run_log(
+                "END",
+                id=run_id,
+                env=env,
+                elapsed=time.monotonic() - started,
+                outcome=f"raised:{type(exc).__name__}",
+            )
+            raise
+
+    async def _run_impl(
+        self,
+        request: Request,
+        body: SimpleAgentRunRequest,
+        *,
+        env: str,
+        run_id: Optional[str],
+        started: float,
+    ) -> SimpleAgentVerifyResponse:
         cookies = request.cookies
 
         seed_session_response = await self.server_client.post(
@@ -191,6 +223,7 @@ class SimpleAgent(SimpleResponsesAPIAgent):
         await raise_for_status(seed_session_response)
         cookies = seed_session_response.cookies
 
+        gen_started = time.monotonic()
         response = await self.server_client.post(
             server_name=self.config.name,
             url_path="/v1/responses",
@@ -199,19 +232,48 @@ class SimpleAgent(SimpleResponsesAPIAgent):
         )
         await raise_for_status(response)
         cookies = response.cookies
-
-        verify_request = SimpleAgentVerifyRequest.model_validate(
-            body.model_dump() | {"response": await get_response_json(response)}
+        gen_json = await get_response_json(response)
+        usage = gen_json.get("usage") or {}
+        gym_run_log(
+            "PHASE",
+            id=run_id,
+            env=env,
+            phase="generate",
+            elapsed=time.monotonic() - gen_started,
+            output_tokens=usage.get("output_tokens"),
+            incomplete=1 if gen_json.get("incomplete_details") else 0,
         )
 
-        verify_response = await self.server_client.post(
+        verify_payload = body.model_dump() | {"response": gen_json}
+        if run_id is not None:
+            verify_payload["gym_run_id"] = run_id
+        verify_request = SimpleAgentVerifyRequest.model_validate(verify_payload)
+
+        verify_started = time.monotonic()
+        verify_http = await self.server_client.post(
             server_name=self.config.resources_server.name,
             url_path="/verify",
             json=verify_request.model_dump(),
             cookies=cookies,
         )
-        await raise_for_status(verify_response)
-        return SimpleAgentVerifyResponse.model_validate(await get_response_json(verify_response))
+        await raise_for_status(verify_http)
+        verify_json = await get_response_json(verify_http)
+        gym_run_log(
+            "PHASE",
+            id=run_id,
+            env=env,
+            phase="verify",
+            elapsed=time.monotonic() - verify_started,
+            **verify_trace_fields(verify_json if isinstance(verify_json, dict) else {}),
+        )
+        gym_run_log(
+            "END",
+            id=run_id,
+            env=env,
+            elapsed=time.monotonic() - started,
+            outcome="ok",
+        )
+        return SimpleAgentVerifyResponse.model_validate(verify_json)
 
     async def aggregate_metrics(self, body: AggregateMetricsRequest = Body()) -> AggregateMetrics:
         """Proxy aggregate_metrics to the resources server."""

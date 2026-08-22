@@ -9,6 +9,9 @@ math_with_judge:
         input: []
       }
       should_use_judge: false
+      library_verify_timeout_s: 10
+      library_verify_max_chars: 16384
+      library_verify_max_concurrent: 8
       domain: math
       verified: false
       description: OpenMathReasoning math dataset with math-verify and LLM-as-a-judge
